@@ -1,0 +1,412 @@
+openapi: 3.1.0
+info:
+  title: ParkShare Booking API
+  version: 0.1.0
+  summary: Proposed MVP contract for availability and employee bookings.
+  description: >-
+    Assessment-stage contract only. This API has not been implemented. The
+    deployed host, Entra issuer/audience, exact site policies, date limits,
+    cancellation rules, and no-show policy must be confirmed before release.
+servers:
+  - url: /api/v1
+    description: Relative base path; deployment host is environment-specific.
+tags:
+  - name: Availability
+  - name: Bookings
+security:
+  - entraBearer: []
+paths:
+  /sites/{siteId}/availability:
+    get:
+      operationId: searchAvailability
+      summary: Search bookable slots for a site-local service date.
+      description: >-
+        Results are advisory and do not reserve a slot. The booking operation
+        revalidates availability, eligibility, site policy, and quota at commit.
+      tags: [Availability]
+      parameters:
+        - $ref: '#/components/parameters/SiteId'
+        - name: date
+          in: query
+          required: true
+          description: Service date in the site's local calendar, not a UTC timestamp.
+          schema:
+            type: string
+            format: date
+        - name: accessible
+          in: query
+          required: false
+          description: If true, return only slots marked accessible.
+          schema:
+            type: boolean
+        - name: evCharger
+          in: query
+          required: false
+          description: If true, return only slots with an EV charger.
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Availability search completed; an empty list means no slots matched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailabilityResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /bookings:
+    post:
+      operationId: createBooking
+      summary: Book one released slot for one or more service dates.
+      description: >-
+        All requested dates succeed or none do. The server derives tenant and
+        employee identity from the authenticated principal, then atomically
+        rechecks policy, eligibility, quota, and allocation uniqueness. A
+        repeated idempotency key with the same request returns the original
+        outcome; using that key with a different request is rejected.
+      tags: [Bookings]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Caller-generated key scoped to the authenticated employee.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBookingRequest'
+      responses:
+        '201':
+          description: Booking committed.
+          headers:
+            Location:
+              description: Relative URL of the created booking.
+              schema:
+                type: string
+                format: uri-reference
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Slot, quota, policy, or idempotency-key conflict.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Request is syntactically valid but violates a booking rule.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /bookings/{bookingId}/cancellation:
+    post:
+      operationId: cancelBooking
+      summary: Cancel an eligible booking.
+      description: >-
+        Only the booking owner or an explicitly authorized site manager may
+        cancel. Policy determines whether cancellation is permitted. A successful
+        cancellation releases its active allocation atomically. Manager overrides
+        require an audit reason outside this employee operation.
+      tags: [Bookings]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: Booking cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Booking is not cancellable under current policy or state.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /bookings/{bookingId}/check-in:
+    post:
+      operationId: checkInBooking
+      summary: Confirm arrival for an active booking.
+      description: >-
+        Proposed MVP check-in uses the authenticated employee and the booking's
+        site-local service date. Site cutoff, grace period, and acceptance rules
+        are policy-configured and remain to be approved. This operation does not
+        represent a barrier/LPR event.
+      tags: [Bookings]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: Check-in recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Booking is not eligible for check-in at this time.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+components:
+  securitySchemes:
+    entraBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Access token issued by the configured Microsoft Entra tenant. Issuer,
+        audience, scopes/roles, and tenant-specific configuration are deployment
+        settings and are not defined by this assessment contract.
+  parameters:
+    SiteId:
+      name: siteId
+      in: path
+      required: true
+      description: Opaque site identifier.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    BookingId:
+      name: bookingId
+      in: path
+      required: true
+      description: Opaque booking identifier.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+  responses:
+    BadRequest:
+      description: Invalid parameter or request body.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: Missing or invalid access token.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: Caller is not authorized for this resource or action.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: Resource not found or not visible to the caller.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    TooManyRequests:
+      description: Request rate limit exceeded.
+      headers:
+        Retry-After:
+          description: Suggested delay in seconds before retrying.
+          schema:
+            type: integer
+            minimum: 0
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    InternalError:
+      description: Unexpected server error. Response must not expose internal details.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unavailable:
+      description: Service or required dependency is temporarily unavailable.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+  schemas:
+    CreateBookingRequest:
+      type: object
+      additionalProperties: false
+      required: [siteId, slotId, serviceDates, plateId]
+      properties:
+        siteId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Site identifier; tenant is derived from the access token.
+        slotId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Slot identifier returned by availability search.
+        serviceDates:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          description: >-
+            Site-local calendar dates. The server applies booking-window and
+            quota policy. The complete request is committed or rejected atomically.
+          items:
+            type: string
+            format: date
+        plateId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Reference to a plate registered to the authenticated employee; do not send raw plate values.
+    AvailabilityResponse:
+      type: object
+      additionalProperties: false
+      required: [siteId, date, slots]
+      properties:
+        siteId:
+          type: string
+        date:
+          type: string
+          format: date
+          description: Site-local service date.
+        slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailableSlot'
+    AvailableSlot:
+      type: object
+      additionalProperties: false
+      required: [slotId, attributes]
+      properties:
+        slotId:
+          type: string
+        attributes:
+          $ref: '#/components/schemas/SlotAttributes'
+    SlotAttributes:
+      type: object
+      additionalProperties: false
+      properties:
+        evCharger:
+          type: boolean
+        accessible:
+          type: boolean
+        motorbike:
+          type: boolean
+        compact:
+          type: boolean
+        size:
+          type: string
+          description: Site-defined size label; vocabulary is not yet standardized.
+    Booking:
+      type: object
+      additionalProperties: false
+      required: [bookingId, siteId, slotId, serviceDates, status, createdAt]
+      properties:
+        bookingId:
+          type: string
+        siteId:
+          type: string
+        slotId:
+          type: string
+        serviceDates:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            format: date
+        status:
+          type: string
+          enum: [confirmed, checkedIn, cancelled, noShow, completed]
+        createdAt:
+          type: string
+          format: date-time
+        checkedInAt:
+          type: string
+          format: date-time
+          description: Present after successful check-in; UTC timestamp.
+        plateId:
+          type: string
+          description: Registered-plate reference; raw plate value is not returned.
+    Problem:
+      type: object
+      description: RFC 9457 Problem Details response with an optional stable application error code.
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        detail:
+          type: string
+          description: Safe, user-actionable detail; never disclose another employee's data or internal exception details.
+        instance:
+          type: string
+          format: uri-reference
+        code:
+          type: string
+          description: Stable application error code, for example SLOT_UNAVAILABLE or BOOKING_QUOTA_EXCEEDED.
+      required: [title, status]
